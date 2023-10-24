@@ -13,21 +13,17 @@ def coord_check(
     nseeds,
     plotdir="",
     legend=False,
-    in_dim=28**2,
-    out_dim=10,
-    nlayers=3,
+    lossfn="cross_entropy",
 ):
     def gen(w, standparam=False):
         def f():
-            model = model_fn(
-                widths=[in_dim] + [w] * (nlayers - 2) + [out_dim], use_mup=mup
-            )
+            model = model_fn(w=w, use_mup=mup)
             return model
 
         return f
 
     widths = 2 ** np.arange(7, 14)
-    models = {w: gen(w, standparam=not mup) for w in widths}
+    models = {w: gen(w) for w in widths}
 
     df = get_coord_data(
         models,
@@ -38,7 +34,7 @@ def coord_check(
         flatten_input=True,
         nseeds=nseeds,
         nsteps=nsteps,
-        lossfn="mse",
+        lossfn=lossfn,
     )
 
     prm = "μP" if mup else "SP"
