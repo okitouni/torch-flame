@@ -4,10 +4,15 @@ from tqdm import trange
 
 
 class Flame:
-    def __init__(self, model, optimizer=None, loss=None, device=None) -> None:
+    def __init__(self, model, optimizer=None, loss='mse', device=None) -> None:
         self.model = model
         self.optimizer = optimizer or get_optimizer(model, lr=1e-3)
-        self.loss = loss or torch.nn.MSELoss()
+        if loss == 'mse':
+            self.loss = torch.nn.MSELoss()
+        elif loss == 'xent':
+            self.loss = torch.nn.CrossEntropyLoss()
+        else:
+            raise ValueError(f"loss {loss} not supported")
         self.device = device or torch.device("cpu")
         self.model.to(self.device)
 

@@ -3,36 +3,48 @@ import mup
 import torch.nn.functional as F
 from typing import Optional, Union
 from torch import nn
+from typing import Iterable
+
+
+class MLPEmbedding(torch.nn.Module):
+    def __init__(self, vocab_size, hidden_dims, output_dim):
+        super().__init__()
+        hidden_dims = (
+            [hidden_dims]
+            if not isinstance(hidden_dims, Iterable)
+            else list(hidden_dims)
+        )
+        self.embedding = torch.nn.Embedding(vocab_size, hidden_dims[0])
+        hidden_dims[0] = hidden_dims[0] * 2
+        self.mlp = MLP(hidden_dims[0], hidden_dims[1:], output_dim)
+
+    def forward(self, x):
+        x = self.embedding(x).flatten(1)
+        x = self.mlp(x)
+        return x
+
+    def update_readout(self):
+        readout_shape = self.mlp.readout.weight.shape
+        self.mlp.readout = mup.MuReadout(
+            readout_shape[1], readout_shape[0], readout_zero_init=True
+        )
+        return (self.mlp.readout,)
 
 
 class MLP(torch.nn.Module):
-    def __init__(self, widths, use_mup=False, savefile=None) -> None:
+    def __init__(self, input_dim, hidden_dims, output_dim) -> None:
         super().__init__()
+        hidden_dims = (
+            [hidden_dims]
+            if not isinstance(hidden_dims, Iterable)
+            else list(hidden_dims)
+        )
+        widths = [input_dim] + hidden_dims + [output_dim]
         self.act = F.leaky_relu
         self.layers = torch.nn.ModuleList()
         for i in range(len(widths) - 2):
             self.layers.append(torch.nn.Linear(widths[i], widths[i + 1]))
-        readout = mup.MuReadout if use_mup else torch.nn.Linear
-        self.readout = readout(widths[-2], widths[-1])
-        if use_mup:
-            depth = len(widths) - 2
-            base_width = 64
-            base_widths = [widths[0]] + [base_width] * depth + [widths[-1]]
-            delta_widths = [widths[0]] + [base_width + 1] * depth + [widths[-1]]
-            base = MLP(base_widths, use_mup=False)
-            delta = MLP(delta_widths, use_mup=False)
-            mup.set_base_shapes(self, base, delta=delta, savefile=savefile)
-            self.reset_parameters()
-
-    def reset_parameters(self) -> None:
-        # Setting a=sqrt(5) in kaiming_uniform is the same as initializing with
-        # uniform(-1/sqrt(in_features), 1/sqrt(in_features)). For details, see
-        for name, p in self.named_parameters():
-            if "bias" in name or "readout" in name:
-                mup.init.uniform_(p, 0, 0)
-            else:
-                # mup.init.kaiming_uniform_(p, a=None)
-                mup.init.uniform_(p, -0.1, 0.1)
+        self.readout = torch.nn.Linear(widths[-2], widths[-1])
 
     def forward(self, x):
         for layer in self.layers:
@@ -63,26 +75,28 @@ class ResBlock(torch.nn.Module):
         return x
 
 
-class ResMLP(MLP):
-    def __init__(self, widths, use_mup=False, savefile=None) -> None:
-        super().__init__(widths, use_mup, savefile)
+class ResMLP(nn.Module):
+    def __init__(self, input_dim, hidden_dims, output_dim) -> None:
+        super().__init__()
+        hidden_dims = (
+            [hidden_dims]
+            if not isinstance(hidden_dims, Iterable)
+            else list(hidden_dims)
+        )
+        widths = [input_dim] + hidden_dims + [output_dim]
         self.layers = torch.nn.ModuleList([nn.Linear(widths[0], widths[1])])
         for i in range(1, len(widths) - 1):
             assert (
                 widths[i] == widths[1]
             ), "ResMLP requires all hidden layers to have the same width"
             self.layers.append(ResBlock(widths[i]))
-        readout = mup.MuReadout if use_mup else torch.nn.Linear
-        self.readout = readout(widths[-2], widths[-1])
-        if use_mup:
-            depth = len(widths) - 2
-            base_width = 32
-            base_widths = [widths[0]] + [base_width] * depth + [widths[-1]]
-            delta_widths = [widths[0]] + [base_width + 1] * depth + [widths[-1]]
-            base = ResMLP(base_widths, use_mup=False)
-            delta = ResMLP(delta_widths, use_mup=False)
-            mup.set_base_shapes(self, base, delta=delta, savefile=savefile)
-            self.reset_parameters()
+        self.readout = torch.nn.Linear(widths[-2], widths[-1])
+    
+    def forward(self, x):
+        for layer in self.layers:
+            x = layer(x)
+        x = self.readout(x)
+        return x
 
 
 def get_optimizer(model, lr, use_mup=False):
