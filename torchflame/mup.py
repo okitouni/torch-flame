@@ -4,6 +4,12 @@ import torch
 import mup
 from mup.coord_check import get_coord_data, plot_coord_data
 from typing import Iterable
+import tqdm
+import pandas as pd
+from .Flame import Flame
+from .models import get_optimizer
+from matplotlib import pyplot as plt
+
 
 def coord_check(
     model_fn,
@@ -16,9 +22,11 @@ def coord_check(
     legend=False,
     lossfn="cross_entropy",
 ):
+    """make coord_check plot for a model. takes model callable which returns a model with the given width."""
+
     def gen(w):
         def f():
-            model = model_fn(w=w)
+            model = model_fn(w)
             return model
 
         return f
@@ -47,7 +55,9 @@ def coord_check(
         face_color="xkcd:light grey" if not mup else None,
     )
 
+
 def make_delta_args(fixed_args, scale_args):
+    """make delta model by adding one to scale args, ie. the width-like parameters of the base model."""
     delta_args = fixed_args.copy()
     for k, v in scale_args.items():
         if isinstance(v, Iterable):
@@ -57,10 +67,19 @@ def make_delta_args(fixed_args, scale_args):
             delta_args[k] = v + 1
     return delta_args
 
-def make_mup(model_fn, readout_fn, fixed_args, scale_args, savefile=None, ):
+
+def make_mup(
+    model_fn,
+    readout_fn,
+    fixed_args,
+    scale_args,
+    savefile=None,
+):
     """take model init function and return a mup model.
     This method expects the model to have readout layer(s) which will be replaced with MuReadout.
-    Scale args are going to be used as default for the base model."""
+    Scale args are going to be used as default for the base model.
+    readout_fn is a function that replaces the readout layer(s) with MuReadout and returns them.
+    """
     ######### Setup Shapes #########
     base_args = fixed_args.copy()
     base_args.update(scale_args)
@@ -85,3 +104,130 @@ def make_mup(model_fn, readout_fn, fixed_args, scale_args, savefile=None, ):
         if readout.bias is not None:
             readout.bias.data = torch.zeros_like(readout.bias.data)
     return model
+
+
+def make_histories(
+    model_fn,
+    trainloader,
+    widths,
+    lrs,
+    seeds,
+    valloader=None,
+    savefile=None,
+    lossfn="mse",
+    epochs=500,
+):
+    """train models with different widths and learning rates and save history to df."""
+    # check if notebook to make tqdm.notebook.trange instead of tqdm.trange
+    try:
+        get_ipython()
+        from tqdm.notebook import trange
+    except:
+        from tqdm import trange
+    pbar = tqdm.trange(len(widths) * len(seeds) * len(lrs))
+
+    histories = []
+    for lr in lrs:
+        for width in widths:
+            for seed in seeds:
+                row = {"lr": lr, "width": width, "seed": seed}
+                pbar.update(1)
+                torch.manual_seed(seed)
+                model = model_fn(width)
+                optimizer = get_optimizer(model, lr, use_mup=True)
+                flame_model = Flame(model, optimizer, device="cuda", loss=lossfn)
+                flame_model.fit(
+                    trainloader, valloader=valloader, epochs=epochs, track_loss=10
+                )
+                for k, v in flame_model.history.items():
+                    row[k] = v
+                histories.append(row)
+                desc = f"lr: {lr}, width: {width}, seed: {seed}"
+                desc += ",".join(
+                    [f" {k}:{v[-1]}" for k, v in flame_model.history.items()]
+                )
+                pbar.set_description(desc)
+    pbar.close()
+
+    # export to csv
+    df = pd.DataFrame(histories)
+    if savefile:
+        if savefile.endswith(".csv"):
+            savefile = savefile[:-4]
+        df.to_csv(f"{savefile}.csv")
+    return df
+
+
+def make_transfer_plot(df_src, savefile=None):
+    """plot final loss as a function of hyperparameters with different widths"""
+    if isinstance(df_src, str):
+        df = pd.read_csv(df_src, index_col=0)
+    else:
+        df = df_src.copy()
+
+    metric_keys = [k for k in df.columns if k not in ["lr", "width", "seed", "epoch"]]
+    # CLEANUP df
+    # we neede to plot final loss (metric) for each width as a function of learning rate
+    for k in metric_keys:
+        eval_fn = eval if not isinstance(df[k][0], list) else lambda x: x
+        # when saving to csv, the list of losses is converted to string so we need to eval it
+        df[k] = df[k].apply(eval_fn).apply(lambda x: x[-1])
+        
+    # SETUP plot
+    fig = plt.figure(figsize=(8 * len(metric_keys), 5))
+    for i, column_name in enumerate(metric_keys):
+        # make shaded area for max and min and center is mean
+        max_ = df.groupby(["lr", "width"])[column_name].max().unstack()
+        min_ = df.groupby(["lr", "width"])[column_name].min().unstack()
+        mean_ = df.groupby(["lr", "width"])[column_name].mean().unstack()
+
+        x_axis = mean_.index
+
+        fig.add_subplot(1, len(metric_keys), i + 1)
+        for width in mean_.columns:
+            plt.fill_between(x_axis, min_[width], max_[width], alpha=0.1)
+            plt.plot(x_axis, mean_[width], label=width)
+
+        plt.legend()
+        plt.xscale("log")
+        plt.yscale("log")
+        plt.xlabel("learning rate")
+        plt.ylabel(f"{column_name}")
+    if savefile is not None:
+        plt.savefig(savefile)
+
+
+def plot_history(df_src, savefile=None):
+    if isinstance(df_src, str):
+        df = pd.read_csv(df_src, index_col=0)
+    else:
+        df = df_src
+    group = df.groupby(['lr', 'width']).losses
+    
+    lrs = df.lr.unique()
+    widths = df.width.unique()
+
+    for lr in lrs.round(8):
+        for c, width in enumerate(widths):
+            losses = group.get_group((lr, width))
+            losses = np.array(losses.tolist())
+            mean_ = losses.mean(axis=0)
+            max_ = losses.max(axis=0)
+            min_ = losses.min(axis=0)
+            x_axis = np.arange(len(mean_)) * 10
+            plt.fill_between(x_axis, min_, max_, alpha=0.1)
+            plt.plot(x_axis, mean_, label=width)
+            
+        plt.xlabel('epoch')
+        plt.ylabel('loss')
+
+        plt.yscale('log')
+        plt.title(f'lr={lr}')
+        plt.legend(title="width")
+        if savefile is not None:
+            # split last . to append details before extension
+            savefile = savefile.split('.')
+            savefile.insert(-1, f'lr_{lr}')
+            savefile = '.'.join(savefile)
+            plt.savefig(savefile)
+        plt.show()
