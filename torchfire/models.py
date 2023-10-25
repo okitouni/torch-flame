@@ -99,8 +99,8 @@ class ResMLP(nn.Module):
         return x
 
 
-def get_optimizer(model, lr, use_mup=False):
+def get_optimizer(model, lr, use_mup=False,**kwargs):
     if use_mup:
-        return mup.MuAdam(model.parameters(), lr=lr)
+        return mup.MuAdam(model.parameters(), lr=lr, **kwargs)
     else:
-        return torch.optim.Adam(model.parameters(), lr=lr)
+        return torch.optim.Adam(model.parameters(), lr=lr, **kwargs)

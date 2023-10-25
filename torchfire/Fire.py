@@ -4,7 +4,7 @@ from tqdm import trange
 from collections import defaultdict
 
 
-class Flame:
+class Fire:
     def __init__(self, model, optimizer=None, loss="mse", device=None) -> None:
         self.model = model
         self.optimizer = optimizer or get_optimizer(model, lr=1e-3)

@@ -6,7 +6,7 @@ from mup.coord_check import get_coord_data, plot_coord_data
 from typing import Iterable
 import tqdm
 import pandas as pd
-from .Flame import Flame
+from .Fire import Fire
 from .models import get_optimizer
 from matplotlib import pyplot as plt
 
@@ -106,6 +106,7 @@ def make_mup(
     return model
 
 
+
 def make_histories(
     model_fn,
     trainloader,
@@ -124,7 +125,7 @@ def make_histories(
         from tqdm.notebook import trange
     except:
         from tqdm import trange
-    pbar = tqdm.trange(len(widths) * len(seeds) * len(lrs))
+    pbar = trange(len(widths) * len(seeds) * len(lrs))
 
     histories = []
     for lr in lrs:
@@ -135,7 +136,7 @@ def make_histories(
                 torch.manual_seed(seed)
                 model = model_fn(width)
                 optimizer = get_optimizer(model, lr, use_mup=True)
-                flame_model = Flame(model, optimizer, device="cuda", loss=lossfn)
+                flame_model = Fire(model, optimizer, device="cuda", loss=lossfn)
                 flame_model.fit(
                     trainloader, valloader=valloader, epochs=epochs, track_loss=10
                 )
@@ -158,28 +159,28 @@ def make_histories(
     return df
 
 
-def make_transfer_plot(df_src, savefile=None):
+def make_transfer_plot(df_src, transfer_key='lr', savefile=None):
     """plot final loss as a function of hyperparameters with different widths"""
     if isinstance(df_src, str):
         df = pd.read_csv(df_src, index_col=0)
     else:
         df = df_src.copy()
 
-    metric_keys = [k for k in df.columns if k not in ["lr", "width", "seed", "epoch"]]
+    metric_keys = [k for k in df.columns if k not in ["lr", "width", "seed", "epoch", transfer_key]]
     # CLEANUP df
     # we neede to plot final loss (metric) for each width as a function of learning rate
     for k in metric_keys:
         eval_fn = eval if not isinstance(df[k][0], list) else lambda x: x
         # when saving to csv, the list of losses is converted to string so we need to eval it
         df[k] = df[k].apply(eval_fn).apply(lambda x: x[-1])
-        
+
     # SETUP plot
     fig = plt.figure(figsize=(8 * len(metric_keys), 5))
     for i, column_name in enumerate(metric_keys):
         # make shaded area for max and min and center is mean
-        max_ = df.groupby(["lr", "width"])[column_name].max().unstack()
-        min_ = df.groupby(["lr", "width"])[column_name].min().unstack()
-        mean_ = df.groupby(["lr", "width"])[column_name].mean().unstack()
+        max_ = df.groupby([transfer_key, "width"])[column_name].max().unstack()
+        min_ = df.groupby([transfer_key, "width"])[column_name].min().unstack()
+        mean_ = df.groupby([transfer_key, "width"])[column_name].mean().unstack()
 
         x_axis = mean_.index
 
@@ -191,43 +192,53 @@ def make_transfer_plot(df_src, savefile=None):
         plt.legend()
         plt.xscale("log")
         plt.yscale("log")
-        plt.xlabel("learning rate")
+        plt.xlabel(transfer_key)
         plt.ylabel(f"{column_name}")
     if savefile is not None:
         plt.savefig(savefile)
 
+def _convert_str_to_list(df):
+    for k in df.columns:
+        if isinstance(df[k][0], str):
+            df[k] = df[k].apply(eval)
+    return df
+    
 
-def plot_history(df_src, savefile=None):
+def plot_history(df_src, transfer_key="lr", savefile=None):
     if isinstance(df_src, str):
         df = pd.read_csv(df_src, index_col=0)
     else:
         df = df_src
-    group = df.groupby(['lr', 'width']).losses
-    
-    lrs = df.lr.unique()
+    df = _convert_str_to_list(df)
+    lrs = df[transfer_key].unique() # could be lr could be something else
     widths = df.width.unique()
 
-    for lr in lrs.round(8):
-        for c, width in enumerate(widths):
-            losses = group.get_group((lr, width))
-            losses = np.array(losses.tolist())
-            mean_ = losses.mean(axis=0)
-            max_ = losses.max(axis=0)
-            min_ = losses.min(axis=0)
-            x_axis = np.arange(len(mean_)) * 10
-            plt.fill_between(x_axis, min_, max_, alpha=0.1)
-            plt.plot(x_axis, mean_, label=width)
-            
-        plt.xlabel('epoch')
-        plt.ylabel('loss')
+    metric_keys = [k for k in df.columns if k not in ["lr", "width", "seed", "epoch", transfer_key]]
+    fig = plt.figure(figsize=(8 * len(metric_keys), 5 * len(lrs)))
+    cols, rows = len(metric_keys), len(lrs)
+    for row, lr in enumerate(lrs.round(8)):
+        for col, metric in enumerate(metric_keys):
+            fig.add_subplot(rows, cols, col + row * cols + 1)
+            group = df.groupby([transfer_key, "width"])[metric]
 
-        plt.yscale('log')
-        plt.title(f'lr={lr}')
-        plt.legend(title="width")
-        if savefile is not None:
-            # split last . to append details before extension
-            savefile = savefile.split('.')
-            savefile.insert(-1, f'lr_{lr}')
-            savefile = '.'.join(savefile)
-            plt.savefig(savefile)
-        plt.show()
+            for c, width in enumerate(widths):
+                losses = group.get_group((lr, width))
+                losses = np.array(losses.tolist())
+                mean_ = losses.mean(axis=0)
+                max_ = losses.max(axis=0)
+                min_ = losses.min(axis=0)
+                x_axis = np.arange(len(mean_)) * 10
+                plt.fill_between(x_axis, min_, max_, alpha=0.1)
+                plt.plot(x_axis, mean_, label=width)
+
+            plt.xlabel("epoch")
+            plt.ylabel(metric)
+            plt.yscale("log")
+            plt.title(f"{transfer_key}={lr} - {metric}")
+            plt.legend(title="width")
+    if savefile is not None:
+        # split last . to append details before extension
+        savefile = savefile.split(".")
+        savefile.insert(-1, f"lr_{lr}")
+        savefile = ".".join(savefile)
+        plt.savefig(savefile)

@@ -1,4 +1,4 @@
 from .models import get_optimizer, MLP
-from .Flame import Flame
+from .Fire import Fire
 from . import mup
 from . import models
