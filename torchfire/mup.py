@@ -74,6 +74,7 @@ def make_mup(
     fixed_args,
     scale_args,
     savefile=None,
+    reinit=True,
 ):
     """take model init function and return a mup model.
     This method expects the model to have readout layer(s) which will be replaced with MuReadout.
@@ -93,16 +94,17 @@ def make_mup(
     mup.set_base_shapes(model, base_model, delta_model, savefile=savefile)
 
     ######### Re-init #########
-    for name, p in model.named_parameters():
-        if "bias" in name or "readout" in name:
-            mup.init.uniform_(p, 0, 0)
-        else:
-            mup.init.kaiming_uniform_(p, a=None)
-            # mup.init.uniform_(p, -0.1, 0.1)
-    for readout in readouts:
-        readout.weight.data = torch.zeros_like(readout.weight.data)
-        if readout.bias is not None:
-            readout.bias.data = torch.zeros_like(readout.bias.data)
+    if reinit:
+        for name, p in model.named_parameters():
+            if "bias" in name or "readout" in name:
+                mup.init.uniform_(p, 0, 0)
+            else:
+                mup.init.kaiming_uniform_(p, a=None)
+                # mup.init.uniform_(p, -0.1, 0.1)
+        for readout in readouts:
+            readout.weight.data = torch.zeros_like(readout.weight.data)
+            if readout.bias is not None:
+                readout.bias.data = torch.zeros_like(readout.bias.data)
     return model
 
 
@@ -121,6 +123,7 @@ def make_histories(
     """train models with different widths and learning rates and save history to df."""
     # check if notebook to make tqdm.notebook.trange instead of tqdm.trange
     try:
+        from IPython import get_ipython
         get_ipython()
         from tqdm.notebook import trange
     except:
